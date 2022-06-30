@@ -1,0 +1,104 @@
+#/bin/bash
+########################################################################################################################
+#
+# Dba-Docker - Installationsskript fuer Kubernetes
+#
+# Erstellen eines Docker-Containers mit Redis
+#
+# Dokumentation:
+#   https://kiwi.freenet-group.de/display/ENTINFRA/Dba+Kubernetes
+#
+# Bitbucket-Repository:
+#   https://stashweb.mobilcom.de/projects/DOCBASE/repos/database/browse/redis/scripts/bau_dba-redis_container
+#
+########################################################################################################################
+DBAKUBERNETESVERSION="1.0"
+
+SRCDIR=/var/dba/veku
+
+# Container stoppen und loeschen, sofern gestartet
+docker container stop dba-redis
+docker container rm dba-redis
+
+# Images loeschen
+docker image rm docker-base.mobilcom.de/dba-redis
+docker image rm dba-redis
+docker image rm docker-base.mobilcom.de/debian/debian_buster
+
+# Volume loeschen
+docker volume rm dba-redis
+
+# Volume anlegen
+docker volume create dba-redis
+
+# Directory fuer die Images anlegen
+if [ ! -d /var/lib/docker/dba-redis ]; then
+  mkdir /var/lib/docker/dba-redis
+fi
+chown redis.redis /var/lib/docker/dba-redis
+chmod 755 /var/lib/docker/dba-redis
+rm -f /var/lib/docker/dba-redis/*
+
+# Passwortfile kopieren
+cp -f ~/docker_passwords/docker_redis_passwords /var/lib/docker/dba-redis
+
+# Dockerfile kopieren
+cp -f ${SRCDIR}/kubernetes/database/redis/dockerfiles/dba-redis /var/lib/docker/dba-redis
+
+# SW bestimmen
+MY_GETSOFTWARE=$(readlink -f ${SRCDIR}/redis/software/latest)
+MY_GETFILENAME=$(basename ${MY_GETSOFTWARE})
+MY_SOURCE=${MY_GETFILENAME%.tar.gz}
+MY_VERSION=$(basename $(dirname ${MY_GETSOFTWARE}))
+echo "export MY_GETSOFTWARE=$MY_GETSOFTWARE"  > /var/lib/docker/dba-redis/set_vars.2
+echo "export MY_GETFILENAME=$MY_GETFILENAME" >> /var/lib/docker/dba-redis/set_vars.2
+echo "export MY_SOURCE=$MY_SOURCE"           >> /var/lib/docker/dba-redis/set_vars.2
+echo "export MY_VERSION=$MY_VERSION"         >> /var/lib/docker/dba-redis/set_vars.2
+
+# SW kopieren
+cp -f ${MY_GETSOFTWARE}                               /var/lib/docker/dba-redis/default.tar.gz
+cp -f ${SRCDIR}/redis/templates/.rd.cnf.tmp           /var/lib/docker/dba-redis
+cp -f ${SRCDIR}/redis/templates/env_admin_instance    /var/lib/docker/dba-redis
+cp -f ${SRCDIR}/redis/templates/redis.conf.tmp        /var/lib/docker/dba-redis
+cp -f ${SRCDIR}/redis/templates/sentinel.conf.tmp     /var/lib/docker/dba-redis
+
+# vim Anpassungen
+cat > /tmp/.vimrc << EOF
+set nois
+hi clear
+
+" Uncomment the following to have Vim jump to the last position when
+" reopening a file
+if has("autocmd")
+  au BufReadPost * if line("'\"") > 1 && line("'\"") <= line("$") | exe "normal! g'\"" | endif
+endif
+EOF
+mv /tmp/.vimrc /var/lib/docker/dba-redis
+
+# Monitoring Prometheus Redis Metrics Exporter
+cp -f ~/redis_exporter/redis_exporter /var/lib/docker/dba-redis
+cp -f ~/redis_sentinel_exporter/redis_sentinel_exporter /var/lib/docker/dba-redis
+
+# Docker Base Image laden
+docker pull docker-base.mobilcom.de/debian/debian_buster
+
+# Docker Image erstellen
+docker build --build-arg HTTP_PROXY=http://dus-proxy.freenet-group.de:8080 --build-arg HTTPS_PROXY=http://dus-proxy.freenet-group.de:8080 -t dba-redis -f /var/lib/docker/dba-redis/dba-redis /var/lib/docker/dba-redis
+docker tag dba-redis docker-base.mobilcom.de/dba-redis
+
+# Docker Container starten
+docker run -d --name dba-redis --mount source=dba-redis,target=/redisdata -t --sysctl net.core.somaxconn=1024 -p 16379:6379 -p 19121:9121 dba-redis
+
+# Docker Container testen
+export HTTPS_PROXY=http://dus-proxy.freenet-group.de:8080
+curl -L -o /tmp/container-structure-test-linux-amd64 https://storage.googleapis.com/container-structure-test/latest/container-structure-test-linux-amd64
+chmod 755 /tmp/container-structure-test-linux-amd64
+/tmp/container-structure-test-linux-amd64 test --image docker-base.mobilcom.de/dba-redis --config ${SRCDIR}/kubernetes/database/redis/templates/dba-redis-docker-test.yaml
+RET=$?
+
+# Docker Image nach docker-base.mobilcom.de kopieren
+if [ ${RET} -eq 0 ]; then
+  docker push docker-base.mobilcom.de/dba-redis
+else
+  exit ${RET}
+fi

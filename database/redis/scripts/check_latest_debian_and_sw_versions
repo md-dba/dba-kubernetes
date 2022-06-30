@@ -1,0 +1,65 @@
+#!/bin/bash
+###########################################################################################################################
+#
+# Dba-Docker - Installationsskript
+#
+# Dieses Skript ueberprueft regelmaessig, ob es im mobilcom-debitel-Artifactory eine neue Version von Debian gibt.
+#
+# Dokumentation:
+#   https://kiwi.freenet-group.de/display/ENTINFRA/Dba+Kubernetes
+#
+# Bitbucket-Repository:
+#   https://stashweb.mobilcom.de/projects/DOCBASE/repos/database/browse/redis/scripts/check_latest_debian_and_sw_versions
+#
+###########################################################################################################################
+#DBAKUBERNETESVERSION="1.0"
+
+SW=$1
+DOUPDATE=0
+
+# Zugangsdaten zum Bamboo aus dem Konfigurationsfile
+DBADOKUINI=${HOME}/dbadoku.ini
+BAMBOOSERVER=`cat ${HOME}/dbadoku.ini | grep ^bambooserver | cut -d"=" -f2`
+BAMBOOUSER=`cat ${HOME}/dbadoku.ini | grep ^bamboouser | cut -d"=" -f2`
+BAMBOOPW=`cat ${HOME}/dbadoku.ini | grep ^bamboopw | cut -d"=" -f2`
+
+# Gespeicherte Versionen auslesen
+MYSAVEFILE=/var/tmp/dba_docker_check_latest_versions.txt
+if [ -f ${MYSAVEFILE} ]; then
+  LASTDEBIANDATE=$(cat ${MYSAVEFILE} | grep ^LASTDEBIAN | cut -d"=" -f2)
+  LASTREDISVERSION=$(cat ${MYSAVEFILE} | grep ^LASTREDIS | cut -d"=" -f2)
+fi
+
+# Zeitstempel "latest Debian" ermitteln
+MYFILE=/tmp/manifest.json
+if [ -f ${MYFILE} ]; then
+  rm -f ${MYFILE}
+fi
+wget -P /tmp http://artifactory.mobilcom.de/artifactory/docker-base-local/debian/debian_buster/latest/manifest.json >/dev/null 2>&1
+if [ -f ${MYFILE} ]; then
+  LASTDATE=$(stat -c %y ${MYFILE})
+  chmod 666 ${MYFILE}
+fi
+if [ "${LASTDATE}" != "${LASTDEBIANDATE}" ]; then
+  DOUPDATE=1
+fi
+echo "LASTDEBIAN=${LASTDATE}" > ${MYSAVEFILE}
+
+case "${SW}" in
+  redis)  SWFILE=/var/dba/veku/redis/software/latest
+          if [ -r ${SWFILE} ]; then
+            SWVERSION=$(basename $(readlink -f $(readlink -f ${SWFILE})))
+          fi
+          if [ "${SWVERSION}" != "${LASTREDISVERSION}" ]; then
+            DOUPDATE=1
+          fi
+          echo "LASTREDIS=${SWVERSION}" >> ${MYSAVEFILE}
+  ;;
+esac
+
+if [ "${DOUPDATE}" = "1" ]; then
+  curl -X POST "${BAMBOOSERVER}/rest/api/latest/queue/DOCBASE-DBAREDIS" -u ${BAMBOOUSER}:${BAMBOOPW}
+fi
+
+
+

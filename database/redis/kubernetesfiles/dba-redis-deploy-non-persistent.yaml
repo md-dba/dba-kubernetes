@@ -1,0 +1,473 @@
+#####################################################################################################################################
+#
+# Dba-Docker - Kubernetes Deployment Redis
+#
+# Initialisierung im Kubernetes von:
+#   deployments/pods: dba-redis dba-redis-repl dba-redis-sentinel
+#   services: dba-redis dba-redis-repl dba-redis-sentinel
+#
+# Dokumentation:
+#   https://kiwi.freenet-group.de/display/ENTINFRA/Dba+Kubernetes
+#
+# Bitbucket-Repository:
+#   https://stashweb.mobilcom.de/projects/DOCBASE/repos/database/browse/redis/kubernetesfiles/dba-redis-deploy-non-persistent.yaml
+#
+#####################################################################################################################################
+#DBAKUBERNETESVERSION="1.0"
+
+############################
+# Deployment Master
+# name: dba-redis
+############################
+# Deployment Master
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dba-redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: dba-redis
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/part-of: dba-redis
+    app: redis
+    name: dba-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+      role: master
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/instance: dba-redis
+        app.kubernetes.io/version: "1.0"
+        app.kubernetes.io/part-of: dba-redis
+        app: redis
+        name: dba-redis
+        role: master
+    spec:
+      volumes:
+        - name: host-sys
+          hostPath:
+            path: /sys
+      initContainers:
+        - name: disable-thp
+          image: busybox
+          volumeMounts:
+            - name: host-sys
+              mountPath: /host-sys
+          command: ["/bin/sh", "-c"]
+          args: ["echo never >/host-sys/kernel/mm/transparent_hugepage/enabled"]
+      containers:
+        - name: redis
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "false"
+            - name: MASTER
+              value: "true"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "false"
+            - name: SENTINELHOST
+              value: "dba-redis-sentinel"
+            - name: SENTINELPORT
+              value: "26379"
+            - name: MAXMEMORY
+              value: "256MB"
+          ports:
+            - containerPort: 6379
+        - name: sentinel
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "false"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "true"
+          ports:
+            - containerPort: 26379
+        - name: redis-exporter
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "redis"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 100Mi
+          ports:
+          - containerPort: 9121
+        - name: sentinel-exporter
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "sentinel"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 100Mi
+          ports:
+          - containerPort: 9355
+---
+# Service Master
+apiVersion: v1
+kind: Service
+metadata:
+  name: dba-redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: dba-redis
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/part-of: dba-redis
+    app: redis
+    name: dba-redis
+    role: master
+spec:
+  ports:
+  - name: redis
+    port: 6379
+  - name: metrics
+    port: 9121
+  - name: sentinel-metrics
+    port: 9355
+  clusterIP: None
+  selector:
+    app: redis
+    name: dba-redis
+    role: master
+---
+# ServiceMonitor Master
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dba-redis
+  labels:
+    release: prometheus-operator
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: dba-redis
+      app: redis
+      name: dba-redis
+  endpoints:
+    - interval: 10s
+      path: /metrics
+      port: metrics
+      honorLabels: true
+    - interval: 10s
+      path: /metrics
+      port: sentinel-metrics
+      honorLabels: true
+---
+
+############################
+# Deployment Sentinel
+# name: dba-redis-sentinel
+############################
+# Deployment Sentinel
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dba-redis-sentinel
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: dba-redis
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/part-of: dba-redis
+    app: redis-sentinel
+    name: dba-redis-sentinel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-sentinel
+      role: sentinel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/instance: dba-redis
+        app.kubernetes.io/version: "1.0"
+        app.kubernetes.io/part-of: dba-redis
+        app: redis-sentinel
+        name: dba-redis-sentinel
+        role: sentinel
+    spec:
+      volumes:
+        - name: host-sys
+          hostPath:
+            path: /sys
+      initContainers:
+        - name: disable-thp
+          image: busybox
+          volumeMounts:
+            - name: host-sys
+              mountPath: /host-sys
+          command: ["/bin/sh", "-c"]
+          args: ["echo never >/host-sys/kernel/mm/transparent_hugepage/enabled"]
+      containers:
+        - name: sentinel
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "false"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "true"
+            - name: MASTERHOST
+              value: "dba-redis"
+            - name: MASTERPORT
+              value: "6379"
+          ports:
+            - containerPort: 26379
+        - name: sentinel-exporter
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "sentinel"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 100Mi
+          ports:
+          - containerPort: 9355
+---
+# Service Sentinel
+apiVersion: v1
+kind: Service
+metadata:
+  name: dba-redis-sentinel
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: dba-redis
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/part-of: dba-redis
+    app: redis-sentinel
+    name: dba-redis-sentinel
+    role: sentinel
+spec:
+  ports:
+  - name: dba-redis-sentinel
+    port: 26379
+  - name: sentinel-metrics
+    port: 9355
+  clusterIP: None
+  selector:
+    app: redis-sentinel
+    name: dba-redis-sentinel
+    role: sentinel
+---
+# ServiceMonitor Sentinel
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dba-redis-sentinel
+  labels:
+    release: prometheus-operator
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: dba-redis
+      app: redis-sentinel
+      name: dba-redis-sentinel
+  endpoints:
+    - interval: 10s
+      path: /metrics
+      port: sentinel-metrics
+      honorLabels: true
+---
+
+############################
+# Deployment Replikationen
+# name: dba-redis-repl
+############################
+# Deployment Replikationen
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dba-redis-repl
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: dba-redis
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/part-of: dba-redis
+    app: redis
+    name: dba-redis-repl
+spec:
+  replicas: 2 # REPLICATIONCOUNT
+  selector:
+    matchLabels:
+      app: redis
+      role: replica
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/instance: dba-redis
+        app.kubernetes.io/version: "1.0"
+        app.kubernetes.io/part-of: dba-redis
+        app: redis
+        name: dba-redis-repl
+        role: replica
+    spec:
+      volumes:
+        - name: host-sys
+          hostPath:
+            path: /sys
+      initContainers:
+        - name: disable-thp
+          image: busybox
+          volumeMounts:
+            - name: host-sys
+              mountPath: /host-sys
+          command: ["/bin/sh", "-c"]
+          args: ["echo never >/host-sys/kernel/mm/transparent_hugepage/enabled"]
+      containers:
+        - name: redis
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "false"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "true"
+            - name: SENTINEL
+              value: "false"
+            - name: SENTINELHOST
+              value: "dba-redis-sentinel"
+            - name: SENTINELPORT
+              value: "26379"
+            - name: MAXMEMORY
+              value: "256MB"
+          ports:
+            - containerPort: 6379
+        - name: sentinel
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "false"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "true"
+            - name: MASTERHOST
+              value: "dba-redis"
+            - name: MASTERPORT
+              value: "6379"
+          ports:
+            - containerPort: 26379
+        - name: redis-exporter
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "redis"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 100Mi
+          ports:
+          - containerPort: 9121
+        - name: sentinel-exporter
+          image: docker-base.mobilcom.de/dba-redis
+          env:
+            - name: EXPORTER
+              value: "sentinel"
+            - name: MASTER
+              value: "false"
+            - name: REPLICA
+              value: "false"
+            - name: SENTINEL
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 100Mi
+          ports:
+          - containerPort: 9355
+---
+# Service Replikationen
+apiVersion: v1
+kind: Service
+metadata:
+  name: dba-redis-repl
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: dba-redis
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/part-of: dba-redis
+    app: redis
+    name: dba-redis-repl
+    role: replica
+spec:
+  ports:
+  - name: redis
+    port: 6379
+  - name: metrics
+    port: 9121
+  - name: sentinel-metrics
+    port: 9355
+  clusterIP: None
+  selector:
+    app: redis
+    name: dba-redis-repl
+    role: replica
+---
+# ServiceMonitor Replikationen
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dba-redis-repl
+  labels:
+    release: prometheus-operator
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: dba-redis
+      app: redis
+      name: dba-redis-repl
+  endpoints:
+    - interval: 10s
+      path: /metrics
+      port: metrics
+      honorLabels: true
+    - interval: 10s
+      path: /metrics
+      port: sentinel-metrics
+      honorLabels: true

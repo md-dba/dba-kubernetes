@@ -1,0 +1,37 @@
+########################################################################################################################
+#
+# Dba-Docker - Container Structure Tests
+#
+# Test des Redis Docker-Container-Images dba-redis.
+#
+# Dokumentation:
+#   https://kiwi.freenet-group.de/display/ENTINFRA/Dba+Kubernetes
+#
+# Bitbucket-Repository:
+#   https://stashweb.mobilcom.de/projects/DOCBASE/repos/database/browse/redis/templates/dba-redis-docker-test.yaml
+#
+########################################################################################################################
+#DBAKUBERNETESVERSION="1.0"
+
+schemaVersion: 2.0.0
+
+fileExistenceTests:
+  - name: "/opt/redis"
+    path: "/opt/redis"
+    shouldExist: true
+
+  - name: "/redisdata/dba-redis_6379/data"
+    path: "/redisdata/dba-redis_6379/data"
+    shouldExist: true
+
+commandTests:
+  - name: "redis cli"
+    command: "/opt/redis/bin/redis-cli"
+
+  - name: "redis exporter"
+    command: "/opt/redis/redis_exporter"
+    args: ["--version"]
+
+  - name: "redis sentinel exporter"
+    command: "/opt/redis/redis_sentinel_exporter"
+    args: ["--version"]

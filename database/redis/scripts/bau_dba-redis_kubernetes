@@ -1,0 +1,86 @@
+#/bin/bash
+########################################################################################################################
+#
+# Dba-Docker - Installationsskript fuer Kubernetes
+#
+# Erstellen eines Kubernetes Manifest fuer Redis in Yaml-Format.
+#
+# Dokumentation:
+#   https://kiwi.freenet-group.de/display/ENTINFRA/Dba+Kubernetes
+#
+# Bitbucket-Repository:
+#   https://stashweb.mobilcom.de/projects/DOCBASE/repos/database/browse/redis/scripts/bau_dba-redis_kubernetes
+#
+########################################################################################################################
+DBAKUBERNETESVERSION="1.0"
+
+
+ERROR_FLAG=0
+MAXMEMORY=256MB               # Redis configuration maxmemory
+REPLICATIONCOUNT=2            # Number of Replicationserver
+
+SRCDIR=/var/dba/veku
+SRCDIR=$(dirname $0)/../../../..
+
+# Funktionen
+function myecho {
+   echo ""
+   echo "$(date '+%d.%m.%Y %H:%M:%S') ${*}"
+}
+
+function usage {
+   echo ""
+   echo "${0} [-m <Redis configuration maxmemory>]"
+   echo ""
+   echo "-m <Redis configuration maxmemory>"
+   echo "  default = 256MB"
+   echo "  see Redis configuration file section MEMORY MANAGEMENT"
+   echo ""
+   echo "-r <Number of Replicationserver>"
+   echo "  default = 2"
+   echo ""
+}
+
+myecho "[INFO] Start"
+
+# check parameter
+while getopts "r:hm:" PARAM; do
+  case "${PARAM}" in
+    h) usage 1>&2
+       myecho "[INFO] End"
+       exit
+       ;;
+    m) MAXMEMORY=${OPTARG} ;;
+    r) REPLICATIONCOUNT=${OPTARG} ;;
+    *) myecho "[ERROR] Unknown Parameter!" 1>&2
+       usage 1>&2
+       ERROR_FLAG=1
+       ;;
+   esac
+done
+
+MYYAML=${SRCDIR}/kubernetes/database/redis/kubernetesfiles/dba-redis-deploy-non-persistent.yaml
+if [ ! -r ${MYYAML} ]; then
+  myecho "[ERROR] Kubernetes manifest template ${MYYAML} doesn't exist!" 1>&2
+  ERROR_FLAG=1
+fi
+
+if [ ${ERROR_FLAG} -eq 0 ]; then
+  echo "Kubernetes manifest template:  ${MYYAML}"
+  echo "Number of Replicationserver:   ${REPLICATIONCOUNT}"
+  echo "Redis configuration maxmemory: ${MAXMEMORY}"
+  yaml=/tmp/$(basename ${0}).yaml
+  cp ${MYYAML} ${yaml}
+
+  # Redis configuration maxmemory
+  sed -i '/name: MAXMEMORY/{n;s/.*/              value: "'"${MAXMEMORY}"'"/}' ${yaml}
+
+  # Number of Redis Replicas
+  sed -i "s/^\s*replicas:.*# REPLICATIONCOUNT/  replicas: ${REPLICATIONCOUNT} # REPLICATIONCOUNT/" ${yaml}
+
+  # Deploy Kubernetes manifest
+  kubectl apply -f ${yaml}
+
+  rm ${yaml}
+fi
+myecho "[INFO] End"

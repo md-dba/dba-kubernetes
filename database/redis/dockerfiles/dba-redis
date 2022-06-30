@@ -1,0 +1,306 @@
+########################################################################################################################
+#
+# Dba-Docker - Dockerfile fuer Kubernetes
+#
+# Dockerfile fuer Redis.
+#
+# Dokumentation:
+#   https://kiwi.freenet-group.de/display/ENTINFRA/Dba+Kubernetes
+#
+# Bitbucket-Repository:
+#   https://stashweb.mobilcom.de/projects/DOCBASE/repos/database/browse/redis/dockerfiles/dba-redis
+#
+########################################################################################################################
+#DBAKUBERNETESVERSION="1.0"
+
+# Base Image aus dem docker-base.mobilcom.de Repository
+FROM docker-base.mobilcom.de/debian/debian_buster
+
+# Umgebung
+ENV DEBIAN_FRONTEND noninteractive
+
+# Update (Paketaktualisierung) durchfuehren
+RUN apt-get -y update;
+
+# Notwendige Pakete installieren
+RUN apt-get -y install apt-utils; \
+    apt-get -y install dnsutils iputils-ping vim syslinux-utils libdate-calc-perl gawk libterm-readkey-perl libaio1 libconfig-inifiles-perl  ksh libstdc++5 libxt6 libice6 libsm6 openssh-server;
+
+# Installationsumgebung erstellen
+COPY docker_redis_passwords /tmp
+RUN . /tmp/docker_redis_passwords; \
+    echo "export MY_OSUSERPASSWORD=\"${MY_OSUSERPASSWORD}\"" > /tmp/set_vars.sh; \
+    echo "export MY_REDISUSERPASSWORD=\"${MY_REDISUSERPASSWORD}\"" >> /tmp/set_vars.sh; \
+    rm /tmp/docker_redis_passwords;
+
+# .vimrc anpassen
+COPY .vimrc /tmp
+RUN cp -f /tmp/.vimrc /root/.vimrc; \
+    rm /tmp/.vimrc;
+
+# User redis einrichten
+RUN . /tmp/set_vars.sh; \
+    mkdir /opt/redis; \
+    groupadd -g 40111 redis; \
+    useradd -u 40111 -g redis -d /opt/redis -s /bin/bash -c "Redis SW Owner" redis; \
+    mkdir /opt/redis/ENV; \
+    chown -R redis.redis /opt/redis; \
+    echo "redis:$MY_OSUSERPASSWORD" | chpasswd; \
+    chown redis.redis /tmp/set_vars.sh; \
+    chmod 600 /tmp/set_vars.sh;
+
+# locale konfigurieren
+RUN apt-get -y install locales
+RUN cp /usr/share/zoneinfo/Europe/Berlin /etc/localtime
+RUN echo "Europe/Berlin"                   > /etc/timezone; \
+    chown root:root                          /etc/timezone; \
+    chmod 644                                /etc/timezone
+RUN echo "de_DE ISO-8859-1"                > /etc/locale.gen; \
+    echo "de_DE.UTF-8 UTF-8"              >> /etc/locale.gen; \
+    echo "de_DE@euro ISO-8859-15"         >> /etc/locale.gen; \
+    echo "en_GB ISO-8859-1"               >> /etc/locale.gen; \
+    echo "en_GB.ISO-8859-15 ISO-8859-15"  >> /etc/locale.gen; \
+    echo "en_GB.UTF-8 UTF-8"              >> /etc/locale.gen; \
+    echo "en_US ISO-8859-1"               >> /etc/locale.gen; \
+    echo "en_US.ISO-8859-15 ISO-8859-15"  >> /etc/locale.gen; \
+    echo "en_US.UTF-8 UTF-8"              >> /etc/locale.gen; \
+    chown root:root                          /etc/locale.gen; \
+    chmod 644                                /etc/locale.gen;
+RUN ln -s /etc/locale.alias /usr/share/locale/locale.alias;
+RUN echo "LANG=de_DE.UTF-8"               >> /etc/default/locale \
+    /usr/sbin/locale-gen
+
+# Redis-SW-Installation
+COPY default.tar.gz /tmp
+COPY set_vars.2 /tmp
+RUN apt-get -y install gcc libc++-dev libc6-dev libreadline6-dev libzlcore-dev zlibc bison++ flex zlib1g-dev make tcl
+RUN cat /tmp/set_vars.2 >> /tmp/set_vars.sh; \
+    echo "export MY_HOST=\"dba-redis\"" >> /tmp/set_vars.sh; \
+    echo "export MY_PORT=\"6379\"" >> /tmp/set_vars.sh; \
+    echo "export MY_SENTINELPORT=\"26379\"" >> /tmp/set_vars.sh; \
+    echo "export MY_INSTANCE=\"\${MY_HOST}_\${MY_PORT}\"" >> /tmp/set_vars.sh; \
+    rm /tmp/set_vars.2
+RUN . /tmp/set_vars.sh; \
+    tar -zxf /tmp/default.tar.gz -C /opt/redis/; \
+    rm /tmp/default.tar.gz; \
+    chown -R redis:redis /opt/redis/${MY_SOURCE}; \
+    chmod -R 750 /opt/redis/${MY_SOURCE}; \
+    cd /opt/redis/${MY_SOURCE}; \
+    su redis -c "/usr/bin/make"; \
+    su redis -c "/usr/bin/make test"; \
+    su redis -c "ln -s /opt/redis/${MY_SOURCE} /opt/redis/${MY_INSTANCE}"; \
+    su redis -c "ln -s /opt/redis/${MY_SOURCE}/src /opt/redis/bin"
+RUN apt-get -y remove gcc libc++-dev libc6-dev libreadline6-dev libzlcore-dev zlibc bison++ flex zlib1g-dev make tcl
+
+# Umgebung anpassen
+COPY env_admin_instance /tmp
+RUN . /tmp/set_vars.sh; \
+    cp /tmp/env_admin_instance /opt/redis/ENV/env_admin_${MY_INSTANCE}; \
+    rm /tmp/env_admin_instance; \
+    chown redis.redis /opt/redis/ENV/env_admin_${MY_INSTANCE}; \
+    sed -i 's/<INSTANCE>/'${MY_INSTANCE}'/g' /opt/redis/ENV/env_admin_${MY_INSTANCE}; \
+    sed -i 's/<HOST>/'${MY_HOST}'/g' /opt/redis/ENV/env_admin_${MY_INSTANCE}; \
+    sed -i 's/<PORT>/'${MY_PORT}'/g' /opt/redis/ENV/env_admin_${MY_INSTANCE}
+COPY .rd.cnf.tmp /tmp/.rd.cnf
+RUN . /tmp/set_vars.sh; \
+    cp /tmp/.rd.cnf /opt/redis/.rd.cnf; \
+    rm /tmp/.rd.cnf; \
+    chmod 600 /opt/redis/.rd.cnf; \
+    chown redis:redis /opt/redis/.rd.cnf; \
+    sed -i 's/.*<PASSWORD>/#&/g;s/<INSTANCE>/'${MY_INSTANCE}'/g;s/<PORT>/'${MY_PORT}'/g' /opt/redis/.rd.cnf
+
+# Datadir anlegen
+RUN . /tmp/set_vars.sh; \
+    mkdir -p /redisdata/${MY_INSTANCE}/data; \
+    chmod 755 /redisdata/${MY_INSTANCE}/data; \
+    chown redis:redis /redisdata/${MY_INSTANCE}/data
+
+# Redis-Konfiguration anpassen
+COPY redis.conf.tmp /tmp/redis.conf
+RUN . /tmp/set_vars.sh; \
+    . /opt/redis/ENV/env_admin_${MY_INSTANCE}; \
+    chmod 600 /tmp/redis.conf; \
+    chown redis:redis /tmp/redis.conf; \
+    sed -i 's/^daemonize yes/daemonize no/' /tmp/redis.conf; \
+    sed -i 's/<PORT>/'${MY_PORT}'/g' /tmp/redis.conf; \
+    sed -i 's/<INSTANCE>/'${MY_INSTANCE}'/g' /tmp/redis.conf; \
+    sed -i 's,<DATADIR>,'${DATADIR}',g' /tmp/redis.conf; \
+    sed -i 's,<REDISPASSWORD>,'${MY_REDISUSERPASSWORD}',g' /tmp/redis.conf
+
+# Sentinel-Konfiguration anpassen
+COPY sentinel.conf.tmp /tmp/sentinel.conf
+RUN . /tmp/set_vars.sh; \
+    . /opt/redis/ENV/env_admin_${MY_INSTANCE}; \
+    mkdir -p /opt/redis/sentinel; \
+    chmod 755 /opt/redis/sentinel; \
+    chown redis:redis /opt/redis/sentinel; \
+    chmod 600 /tmp/sentinel.conf; \
+    chown redis:redis /tmp/sentinel.conf; \
+    sed -i 's/<PORT>/'${MY_PORT}'/g' /tmp/sentinel.conf; \
+    sed -i 's,<REDISPASSWORD>,'${MY_REDISUSERPASSWORD}',g' /tmp/sentinel.conf 
+
+# Konfiguration Passwortfile
+COPY .rd.cnf.tmp /tmp/.rd.cnf
+RUN . /tmp/set_vars.sh; \
+    . /opt/redis/ENV/env_admin_${MY_INSTANCE}; \
+    cp /tmp/.rd.cnf /opt/redis/.rd.cnf; \
+    rm /tmp/.rd.cnf; \
+    chown redis.redis /opt/redis/.rd.cnf; \
+    chmod 600 /opt/redis/.rd.cnf; \
+    sed -i 's,<REDISPASSWORD>,'${MY_REDISUSERPASSWORD}',g' /opt/redis/.rd.cnf
+
+# Konfiguration Monitoring Prometheus Redis Metrics Exporter
+COPY redis_exporter /opt/redis
+RUN chmod 755 /opt/redis/redis_exporter; \
+    chown redis:redis /opt/redis/redis_exporter
+
+# Konfiguration Monitoring Prometheus Redis Metrics Exporter
+COPY redis_sentinel_exporter /opt/redis
+RUN chmod 755 /opt/redis/redis_sentinel_exporter; \
+    chown redis:redis /opt/redis/redis_sentinel_exporter
+
+# Redis im Container starten
+USER 40111:40111
+EXPOSE 26379 6379 9121 9355
+
+RUN . /tmp/set_vars.sh; \
+    . /opt/redis/ENV/env_admin_${MY_INSTANCE}; \
+    echo "#!/bin/bash"                                                                                                                               > /opt/redis/redisd_start.sh; \
+    echo "########################################################################################################################"                 >> /opt/redis/redisd_start.sh; \
+    echo "#"                                                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "# Dba-Docker-Kubernetes - Startskript des Redis-Daemons im Docker Container"                                                              >> /opt/redis/redisd_start.sh; \
+    echo "#"                                                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "# Dokumentation:"                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "#   https://kiwi.freenet-group.de/display/ENTINFRA/Dba+Kubernetes"                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "#"                                                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "########################################################################################################################"                 >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "pid=0"                                                                                                                                    >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Funktion zum sauberen Herunterfahren des Daemons/Instanz, wenn der Container gestoppt wird."                                            >> /opt/redis/redisd_start.sh; \
+    echo "term_handler() {"                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "  if [ \$pid -ne 0 ]; then"                                                                                                               >> /opt/redis/redisd_start.sh; \
+    echo "    kill -SIGTERM \"\$pid\""                                                                                                              >> /opt/redis/redisd_start.sh; \
+    echo "  fi"                                                                                                                                     >> /opt/redis/redisd_start.sh; \
+    echo "  sleep 10"                                                                                                                               >> /opt/redis/redisd_start.sh; \
+    echo "  exit 143; # 128 + 15 -- SIGTERM"                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "}"                                                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "trap 'kill \${!}; term_handler' SIGTERM"                                                                                                  >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Anlegen von DATADIR (Zusammenhang mit persistentem Storage)"                                                                            >> /opt/redis/redisd_start.sh; \
+    echo "if [ ! -d ${DATADIR} ]; then"                                                                                                             >> /opt/redis/redisd_start.sh; \
+    echo "  mkdir -p ${DATADIR}"                                                                                                                    >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Umgebungen vorbereiten"                                                                                                                 >> /opt/redis/redisd_start.sh; \
+    echo "# Redis"                                                                                                                                  >> /opt/redis/redisd_start.sh; \
+    echo "cp -p /tmp/redis.conf /opt/redis/redis.conf.template"                                                                                     >> /opt/redis/redisd_start.sh; \
+    echo "chown redis.redis /opt/redis/redis.conf.template"                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "chmod 660 /opt/redis/redis.conf.template"                                                                                                 >> /opt/redis/redisd_start.sh; \
+    echo "cp -p /tmp/redis.conf ${DATADIR}/redis.conf"                                                                                              >> /opt/redis/redisd_start.sh; \
+    echo "chown redis.redis ${DATADIR}/redis.conf"                                                                                                  >> /opt/redis/redisd_start.sh; \
+    echo "chmod 660 ${DATADIR}/redis.conf"                                                                                                          >> /opt/redis/redisd_start.sh; \
+    echo "rm /tmp/redis.conf"                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Sentinel"                                                                                                                               >> /opt/redis/redisd_start.sh; \
+    echo "cp -p /tmp/sentinel.conf /opt/redis/sentinel.conf.template"                                                                               >> /opt/redis/redisd_start.sh; \
+    echo "chown redis.redis /opt/redis/sentinel.conf.template"                                                                                      >> /opt/redis/redisd_start.sh; \
+    echo "chmod 660 /opt/redis/sentinel.conf.template"                                                                                              >> /opt/redis/redisd_start.sh; \
+    echo "cp -p /tmp/sentinel.conf /opt/redis/sentinel/sentinel.conf"                                                                               >> /opt/redis/redisd_start.sh; \
+    echo "chown redis.redis /opt/redis/sentinel/sentinel.conf"                                                                                      >> /opt/redis/redisd_start.sh; \
+    echo "chmod 660 /opt/redis/sentinel/sentinel.conf"                                                                                              >> /opt/redis/redisd_start.sh; \
+    echo "rm /tmp/sentinel.conf"                                                                                                                    >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Ip zum Setzen der bind-Direktive ermitteln"                                                                                             >> /opt/redis/redisd_start.sh; \
+    echo "HOSTIP=\$(getent hosts \$(hostname -s) | cut -f1 -d \" \")"                                                                               >> /opt/redis/redisd_start.sh; \
+    echo "sed -i \"s/^bind.*/bind \${HOSTIP}/\" ${DATADIR}/redis.conf"                                                                              >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Passwort zum Setzen saemtlicher Authentifizierung ermitteln"                                                                            >> /opt/redis/redisd_start.sh; \
+    echo "MY_REDISUSERPASSWORD=\$(cat /opt/redis/.rd.cnf | grep password | cut -f3 -d \" \")"                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Bereich fuer Kubernetes"                                                                                                                >> /opt/redis/redisd_start.sh; \
+    echo "# Dieser Bereich soll fuer den reinen Dockerbetrieb transparent sein."                                                                    >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Redis Memory Management"                                                                                                                >> /opt/redis/redisd_start.sh; \
+    echo "if [ \"\${MAXMEMORY}\" != \"\" ]; then"                                                                                                   >> /opt/redis/redisd_start.sh; \
+    echo "  sed -i \"s/^maxmemory.*/maxmemory \${MAXMEMORY}/\" ${DATADIR}/redis.conf"                                                               >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Container mit Sentinel"                                                                                                                 >> /opt/redis/redisd_start.sh; \
+    echo "if [ \"\${SENTINEL}\" = \"true\" ]; then"                                                                                                 >> /opt/redis/redisd_start.sh; \
+    echo "  if [ -z \${MASTERHOST} ]; then"                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "    # Container mit Sentinel auf dem Master"                                                                                              >> /opt/redis/redisd_start.sh; \
+    echo "    # Sentinel lauscht auf der IP des Masters"                                                                                            >> /opt/redis/redisd_start.sh; \
+    echo "    MASTERIP=\${HOSTIP}"                                                                                                                  >> /opt/redis/redisd_start.sh; \
+    echo "  else"                                                                                                                                   >> /opt/redis/redisd_start.sh; \
+    echo "    # Container mit Sentinel nicht auf dem Master"                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "    # Die Ip des Masters wird ermittelt."                                                                                                 >> /opt/redis/redisd_start.sh; \
+    echo "    MASTERIP=\"\""                                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "    while [ -z \${MASTERIP} ]; do"                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "      MASTERIP=\$(getent hosts \${MASTERHOST} | cut -f1 -d \" \")"                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "      sleep 2"                                                                                                                            >> /opt/redis/redisd_start.sh; \
+    echo "    done"                                                                                                                                 >> /opt/redis/redisd_start.sh; \
+    echo "  fi"                                                                                                                                     >> /opt/redis/redisd_start.sh; \
+    echo "  # Sentinel soll sich mit dem Master verbinden."                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "  sed -i \"s/<MASTERIP>/\${MASTERIP}/\" /opt/redis/sentinel/sentinel.conf"                                                                >> /opt/redis/redisd_start.sh; \
+    echo "  sed -i \"s/^bind.*/bind \${HOSTIP}/\" /opt/redis/sentinel/sentinel.conf"                                                                >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "  # Start Sentineldaemon"                                                                                                                 >> /opt/redis/redisd_start.sh; \
+    echo "  ${BASEDIR}/src/redis-server /opt/redis/sentinel/sentinel.conf --sentinel &"                                                             >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Container mit Redis und der Rolle Master"                                                                                               >> /opt/redis/redisd_start.sh; \
+    echo "if [ \"\${MASTER}\" = \"true\" ]; then"                                                                                                   >> /opt/redis/redisd_start.sh; \
+    echo "  # Mit Hilfe der Sentinel-Instanz wird Ip und Port von Master ermittelt."                                                                >> /opt/redis/redisd_start.sh; \
+    echo "  MASTERIP=\$(/opt/redis/bin/redis-cli -h \${SENTINELHOST} -p \${SENTINELPORT} -a \${MY_REDISUSERPASSWORD} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | cut -d' ' -f1 | tr -d '\"')" >> /opt/redis/redisd_start.sh; \
+    echo "  MASTERPORT=\$(/opt/redis/bin/redis-cli -h \${SENTINELHOST} -p \${SENTINELPORT} -a \${MY_REDISUSERPASSWORD} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | cut -d' ' -f2 | tr -d '\"')" >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo "if [ ! -z \"\${MASTERIP}\" -a ! -z \"\${MASTERPORT}\" -a \"\${MASTERIP}\" != \"\${HOSTIP}\" ]; then"                                      >> /opt/redis/redisd_start.sh; \
+    echo "  # Sollte dieser vorgesehene Master nicht mehr Master sein (HV-Switch), dann wird er als Replikant eingebunden."                         >> /opt/redis/redisd_start.sh; \
+    echo "  sed -i \"s/# replicaof <masterip> <masterport>/replicaof \${MASTERIP} \${MASTERPORT}/\" ${DATADIR}/redis.conf"                          >> /opt/redis/redisd_start.sh; \
+    echo "  sed -i \"s/# masterauth <master-password>/masterauth \${MY_REDISUSERPASSWORD}/\" ${DATADIR}/redis.conf"                                 >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Container mit Redis und der Rolle Replica/Slave"                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "if [ \"\${REPLICA}\" = \"true\" ]; then"                                                                                                  >> /opt/redis/redisd_start.sh; \
+    echo "  # Mit Hilfe der Sentinel-Instanz wird Ip und Port von Master ermittelt."                                                                >> /opt/redis/redisd_start.sh; \
+    echo "  MASTERIP=\"\""                                                                                                                          >> /opt/redis/redisd_start.sh; \
+    echo "  while [ -z \${MASTERIP} ]; do"                                                                                                          >> /opt/redis/redisd_start.sh; \
+    echo "    MASTERIP=\$(/opt/redis/bin/redis-cli -h \${SENTINELHOST} -p \${SENTINELPORT} -a \${MY_REDISUSERPASSWORD} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | cut -d' ' -f1 | tr -d '\"')" >> /opt/redis/redisd_start.sh; \
+    echo "    sleep 2"                                                                                                                              >> /opt/redis/redisd_start.sh; \
+    echo "  done"                                                                                                                                   >> /opt/redis/redisd_start.sh; \
+    echo "  MASTERPORT=\"\""                                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "  while [ -z \${MASTERPORT} ]; do"                                                                                                        >> /opt/redis/redisd_start.sh; \
+    echo "    MASTERPORT=\$(/opt/redis/bin/redis-cli -h \${SENTINELHOST} -p \${SENTINELPORT} -a \${MY_REDISUSERPASSWORD} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | cut -d' ' -f2 | tr -d '\"')" >> /opt/redis/redisd_start.sh; \
+    echo "    sleep 2"                                                                                                                              >> /opt/redis/redisd_start.sh; \
+    echo "  done"                                                                                                                                   >> /opt/redis/redisd_start.sh; \
+    echo "  # Redis soll sich mit dem Master verbinden."                                                                                            >> /opt/redis/redisd_start.sh; \
+    echo "  sed -i \"s/# replicaof <masterip> <masterport>/replicaof \${MASTERIP} \${MASTERPORT}/\" ${DATADIR}/redis.conf"                          >> /opt/redis/redisd_start.sh; \
+    echo "  sed -i \"s/# masterauth <master-password>/masterauth \${MY_REDISUSERPASSWORD}/\" ${DATADIR}/redis.conf"                                 >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "if [ \"\${SENTINEL}\" != \"true\" -a \"\${EXPORTER}\" != \"redis\" -a \"\${EXPORTER}\" != \"sentinel\" ]; then"                           >> /opt/redis/redisd_start.sh; \
+    echo "  # Start des Redis Daemons (nicht im Sentinel- oder Exporter Container)"                                                                 >> /opt/redis/redisd_start.sh; \
+    echo "  ${BASEDIR}/src/redis-server ${DATADIR}/redis.conf &"                                                                                    >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "if [ \"\${EXPORTER}\" = \"\" -o \"\${EXPORTER}\" = \"redis\" ]; then"                                                                     >> /opt/redis/redisd_start.sh; \
+    echo "  # Start des Prometheus Redis Metrics Exporter Daemons"                                                                                  >> /opt/redis/redisd_start.sh; \
+    echo "  /opt/redis/redis_exporter -redis.addr=\"redis://\${HOSTIP}:${MY_PORT}\" -redis.password=\"\${MY_REDISUSERPASSWORD}\" &"                 >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "if [ \"\${EXPORTER}\" = \"sentinel\" ]; then"                                                                                             >> /opt/redis/redisd_start.sh; \
+    echo "  # Start des Prometheus Sentinel Metrics Exporter Daemons im Sentinel Container"                                                         >> /opt/redis/redisd_start.sh; \
+    echo "  /opt/redis/redis_sentinel_exporter -sentinel.addr \"redis://\${HOSTIP}:${MY_SENTINELPORT}\" &"                                          >> /opt/redis/redisd_start.sh; \
+    echo "fi"                                                                                                                                       >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "# Endlosschleife zum Abfangen von Signalen fuer das saubere Herunterfahren"                                                               >> /opt/redis/redisd_start.sh; \
+    echo "pid=\"\$!\""                                                                                                                              >> /opt/redis/redisd_start.sh; \
+    echo "while true; do "                                                                                                                          >> /opt/redis/redisd_start.sh; \
+    echo "  tail -f /dev/null & wait \${!}"                                                                                                         >> /opt/redis/redisd_start.sh; \
+    echo "done"                                                                                                                                     >> /opt/redis/redisd_start.sh; \
+    echo ""                                                                                                                                         >> /opt/redis/redisd_start.sh; \
+    chmod 744 /opt/redis/redisd_start.sh; \
+    rm /tmp/set_vars.sh
+ENTRYPOINT ["/opt/redis/redisd_start.sh"]
